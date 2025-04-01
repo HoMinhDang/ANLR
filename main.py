@@ -5,6 +5,15 @@ import torch
 import os
 
 
+def save_plate_number(plate_number, cropped_path):
+    output_dir = os.path.dirname(cropped_path)
+    base_name = os.path.splitext(os.path.basename(cropped_path))[0]
+    output_path = os.path.join(output_dir, f"{base_name}_char.txt")
+    with open(output_path, "w") as f:
+        f.write(plate_number)
+
+    print(f"Saved plate number to: {output_path}")
+
 def main(img_path, model_plate, model_char, device):
     """
         Pipeline for Automated License Plate Recognition
@@ -25,6 +34,7 @@ def main(img_path, model_plate, model_char, device):
         try:
             plate_number = char_model.detect_char(img, label)
             print(f"Detected plate number: {plate_number}")
+            save_plate_number(plate_number, path)
         except ValueError as e:
             print(f"Error in character detection: {e}")
 
