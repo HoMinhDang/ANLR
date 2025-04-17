@@ -3,11 +3,12 @@ import numpy as np
 import torch
 import os
 import sys
+import cv2
+
 sys.path.append(os.path.abspath('yolov5'))
 from yolov5.utils.general import non_max_suppression
 from yolov5.utils.dataloaders import letterbox  
 from yolov5.models.experimental import attempt_load
-import cv2
 
 class CharDetector:
     def __init__(self, weights_path='char_custom.pt', device='cpu'):
@@ -39,7 +40,7 @@ class CharDetector:
         - img (numpy.ndarray): Ảnh đầu vào.
         
         Returns:
-        - img_resized (numpy.ndarray): Ảnh đã resize.
+龄        - img_resized (numpy.ndarray): Ảnh đã resize.
         - img_tensor (torch.Tensor): Tensor ảnh đã được chuẩn hóa.
         """
         if img is None:
@@ -65,7 +66,7 @@ class CharDetector:
         - results (list): Danh sách bounding box với định dạng (xc, yc, w, h, label, confidence).
         """
         _, img_tensor = self.process_img(img)
-        img_tensor.to(self.device)
+        img_tensor = img_tensor.to(self.device)
         self.model.eval()
         with torch.no_grad():
             pred = self.model(img_tensor)[0]
@@ -111,6 +112,45 @@ class CharDetector:
                             keep[j] = False
         results = [det for det, k in zip(pred, keep) if k]
         return results
+
+    def rotate_image(self, bboxes, image):
+        """
+        Tìm đường thẳng hồi quy dựa trên tâm của các bounding box và xoay ảnh sao cho đường thẳng
+        song song với cạnh ngang.
+
+        Parameters:
+        - bboxes (list): Danh sách các bounding box, mỗi box có định dạng (xc, yc, w, h, label, conf).
+        - image (numpy.ndarray): Ảnh đầu vào (định dạng BGR từ OpenCV).
+
+        Returns:
+        - rotated_image (numpy.ndarray): Ảnh đã được xoay.
+        """
+        if not bboxes:
+            return image
+        
+        # Tính đường thẳng hồi quy dựa trên tâm của các bounding box
+        X = np.array([x[0] for x in bboxes])
+        Y = np.array([x[1] for x in bboxes])
+        try:
+            m, b = np.linalg.lstsq(np.vstack([X, np.ones(len(X))]).T, Y, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            return image  # Không xoay nếu không tính được đường thẳng
+        
+        # Tính góc nghiêng của đường thẳng (radian) và chuyển sang độ
+        theta = np.arctan(m)
+        angle = np.degrees(theta)
+        
+        # Lấy kích thước ảnh
+        height, width = image.shape[:2]
+        center = (width // 2, height // 2)
+        
+        # Tạo ma trận xoay
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, scale=1.0)
+        
+        # Xoay ảnh
+        rotated_image = cv2.warpAffine(image, rotation_matrix, (width, height))
+        
+        return rotated_image
 
     def extract_1line(self, pred):
         """
@@ -166,10 +206,31 @@ class CharDetector:
         
         Returns:
         - str: Chuỗi ký tự đã nhận diện.
+        - numpy.ndarray: Ảnh đã được xoay.
         """
+        # Chạy mô hình nhận diện trên ảnh gốc
         pred = self.inference(img, conf_thres, iou_thres)
-        pred = self.filter_nearby_bbox(pred, min_dist)
         if not pred:
             raise ValueError("No characters detected")
         
-        return self.extract_1line(pred) if labels == '1_line' else self.extract_2line(pred)
+        # Lọc các bounding box gần nhau
+        pred = self.filter_nearby_bbox(pred, min_dist)
+        if not pred:
+            raise ValueError("No characters detected after filtering")
+        
+        # Xoay ảnh dựa trên đường thẳng hồi quy từ các bounding box
+        rotated_img = self.rotate_image(pred, img)
+        
+        # Chạy lại mô hình nhận diện trên ảnh đã xoay
+        rotated_pred = self.inference(rotated_img, conf_thres, iou_thres)
+        if not rotated_pred:
+            raise ValueError("No characters detected in rotated image")
+        
+        # Lọc lại các bounding box trên ảnh đã xoay
+        rotated_pred = self.filter_nearby_bbox(rotated_pred, min_dist)
+        if not rotated_pred:
+            raise ValueError("No characters detected in rotated image after filtering")
+        
+        # Trích xuất chuỗi ký tự
+        result = self.extract_1line(rotated_pred) if labels == '1_line' else self.extract_2line(rotated_pred)
+        return result
